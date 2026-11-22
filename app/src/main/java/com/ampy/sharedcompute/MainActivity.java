@@ -13,11 +13,11 @@ import android.widget.*;
 public class MainActivity extends Activity {
  final int teal=0xff43ffda,bg=0xff041619,panel=0xff0c2d31;
  final Handler h=new Handler(Looper.getMainLooper());
- TextView ram,status,log; EditText mem,threads; CheckBox charging;
+ TextView ram,status,log,pairing; EditText mem,threads; CheckBox charging;
  final Runnable refresh=new Runnable(){public void run(){
  ActivityManager.MemoryInfo m=new ActivityManager.MemoryInfo();getSystemService(ActivityManager.class).getMemoryInfo(m);
  ram.setText("RAM AVAILABLE   "+m.availMem/1048576+" / "+m.totalMem/1048576+" MiB\nCPU THREADS     "+Runtime.getRuntime().availableProcessors()+"\nTHERMAL STATUS  "+getSystemService(PowerManager.class).getCurrentThermalStatus());
- status.setText(NodeService.status);log.setText(NodeService.getLog());h.postDelayed(this,1000);
+ status.setText(NodeService.status);NodeService svc=NodeService.instance;String p=svc==null?"OFFLINE":svc.getPairing();if(!p.contentEquals(pairing.getText()))pairing.setText(p);log.setText(NodeService.getLog());h.postDelayed(this,1000);
  }};
  int dp(int n){return Math.round(n*getResources().getDisplayMetrics().density);}
  TextView label(String s,int size){TextView v=new TextView(this);v.setText(s);v.setTextColor(teal);v.setTextSize(size);v.setTypeface(Typeface.MONOSPACE);v.setPadding(0,dp(8),0,dp(8));return v;}
@@ -34,7 +34,9 @@ public class MainActivity extends Activity {
  charging=new CheckBox(this);charging.setText("Only while charging");charging.setTextColor(teal);charging.setChecked(getPreferences(0).getBoolean("charging",true));col.addView(charging);
  Button start=button("ACTIVATE NODE");col.addView(start);start.setOnClickListener(v->{try{int m=Integer.parseInt(mem.getText().toString()),t=Integer.parseInt(threads.getText().toString());if(m<128||t<1||t>Runtime.getRuntime().availableProcessors())throw new IllegalArgumentException();getPreferences(0).edit().putString("mem",""+m).putString("threads",""+t).putBoolean("charging",charging.isChecked()).apply();startForegroundService(new Intent(this,NodeService.class).putExtra("mem",m).putExtra("threads",t).putExtra("charging",charging.isChecked()));}catch(Exception e){Toast.makeText(this,"Invalid budget or threads: "+e.getMessage(),Toast.LENGTH_LONG).show();}});
  Button stop=button("STOP NODE");col.addView(stop);stop.setOnClickListener(v->stopService(new Intent(this,NodeService.class)));
- col.addView(label("SECURE LINK // ADB USB or wireless debugging\n127.0.0.1:50052 • pair your own PC",13));
+ col.addView(label("SECURE LAN // TLS 50552 • no ADB",13));
+ pairing=label("OFFLINE",12);pairing.setTextIsSelectable(true);col.addView(pairing);
+ Button copy=button("COPY PAIRING DETAILS");col.addView(copy);copy.setOnClickListener(v->{String x=pairing.getText().toString();if(x.contains(" | ")){getSystemService(android.content.ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("SharedCompute private pairing",x));Toast.makeText(this,"Copy a single IP line to your own PC only",Toast.LENGTH_LONG).show();}});
  col.addView(label("NODE LOG",14));log=label("",11);log.setTextIsSelectable(true);col.addView(log);
  if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},1);
  }

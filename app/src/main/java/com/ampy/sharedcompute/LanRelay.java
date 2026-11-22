@@ -1,6 +1,8 @@
 package com.ampy.sharedcompute;
 
 import android.security.keystore.KeyGenParameterSpec;
+import android.os.Build;
+import org.json.JSONObject;
 import android.security.keystore.KeyProperties;
 import java.io.*;
 import java.net.*;
@@ -20,6 +22,7 @@ final class LanRelay implements AutoCloseable {
  private final Semaphore slots=new Semaphore(8);
  private volatile boolean closed;
  private volatile SSLServerSocket server;
+ private volatile DatagramSocket discovery;
  volatile String pairing="Preparing secure LAN...";
  private final String token;
  LanRelay(){byte[] b=new byte[32];new SecureRandom().nextBytes(b);token=hex(b);}
@@ -56,6 +59,7 @@ final class LanRelay implements AutoCloseable {
   if(ips.isEmpty())lines.append("No private IPv4 address found. Connect to Wi-Fi and restart node.");
   pairing=lines.toString().trim();
   NodeService.add("TLS LAN ready on port "+PORT+"; raw RPC stays on localhost.");
+ Thread beacon=new Thread(()->discover(pin),"sharedcompute-discovery");beacon.setDaemon(true);beacon.start();
   while(!closed){
    SSLSocket client=(SSLSocket)ss.accept();
    if(!lan(client.getInetAddress())||!slots.tryAcquire()){client.close();continue;}
@@ -63,6 +67,22 @@ final class LanRelay implements AutoCloseable {
    try{pool.execute(()->{try{serve(client);}finally{slots.release();}});}
    catch(RejectedExecutionException e){slots.release();sockets.remove(client);client.close();}
   }
+ }
+ private void discover(String pin){
+  try(DatagramSocket udp=new DatagramSocket(null)){
+   discovery=udp;if(closed)return;udp.setReuseAddress(true);udp.bind(new InetSocketAddress("0.0.0.0",50553));
+   byte[] buf=new byte[256];long last=0;
+   while(!closed){
+    DatagramPacket packet=new DatagramPacket(buf,buf.length);udp.receive(packet);
+    if(!lan(packet.getAddress()))continue;
+    String query=new String(packet.getData(),packet.getOffset(),packet.getLength(),StandardCharsets.US_ASCII);
+    if(!query.matches("SHAREDCOMPUTE_DISCOVER_V1 [a-f0-9]{32}"))continue;
+    long now=android.os.SystemClock.elapsedRealtime();if(now-last<50)continue;last=now;
+    JSONObject j=new JSONObject();j.put("protocol","sharedcompute-discovery-v1");j.put("nonce",query.substring(query.lastIndexOf(' ')+1));j.put("name",Build.MANUFACTURER+" "+Build.MODEL);j.put("pin",pin);j.put("port",PORT);
+    byte[] payload=j.toString().getBytes(StandardCharsets.UTF_8);
+    udp.send(new DatagramPacket(payload,payload.length,packet.getAddress(),packet.getPort()));
+   }
+  }catch(Exception e){if(!closed)NodeService.add("LAN discovery unavailable: "+e.getClass().getSimpleName());}
  }
  private void serve(SSLSocket c){
   Socket rpc=null;
@@ -81,5 +101,5 @@ final class LanRelay implements AutoCloseable {
  }
  private static void copy(InputStream in,OutputStream out)throws IOException{byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1){out.write(b,0,n);out.flush();}}
  private static void quiet(Socket s){try{s.close();}catch(IOException ignored){}}
- @Override public void close(){closed=true;pairing="OFFLINE";SSLServerSocket s=server;if(s!=null)try{s.close();}catch(IOException ignored){}for(Socket x:sockets)quiet(x);pool.shutdownNow();}
+ @Override public void close(){closed=true;pairing="OFFLINE";DatagramSocket udp=discovery;if(udp!=null)udp.close();SSLServerSocket s=server;if(s!=null)try{s.close();}catch(IOException ignored){}for(Socket x:sockets)quiet(x);pool.shutdownNow();}
 }

@@ -117,6 +117,7 @@ class Mesh:
         self.on_event = on_event
         self.stop = threading.Event()
         self.peers = {}
+        self.attempts = {}
         self.pending = {}
         self.lock = threading.RLock()
         self.listener = None
@@ -261,6 +262,20 @@ class Mesh:
                     with self.lock:
                         self.peers[obj["device_id"]] = obj
                     self.on_event("peers", "")
+                    remote_role = obj.get("role")
+                    auto_join = (self.mode == "WORKER" and remote_role in ("MASTER", "AUTO")) or (
+                        self.mode == "AUTO" and (
+                            remote_role == "MASTER" or (
+                                remote_role == "AUTO" and self.cfg["device_id"] > obj["device_id"])))
+                    if auto_join:
+                        now = time.monotonic()
+                        with self.lock:
+                            last_attempt = self.attempts.get(obj["device_id"], -1e9)
+                            due = now - last_attempt > 120
+                            if due:
+                                self.attempts[obj["device_id"]] = now
+                        if due:
+                            threading.Thread(target=self._auto_pair, args=(obj.copy(),), daemon=True).start()
                     if obj.get("type") == "discover":
                         try:
                             udp.sendto(json.dumps(self.offer()).encode("utf-8"), addr)
@@ -286,6 +301,13 @@ class Mesh:
                 send_frame(conn, {**request, "device_id": self.cfg["device_id"],
                                   "name": self.name, "token": stored.get("token", "")})
                 return recv_frame(conn), actual
+
+    def _auto_pair(self, peer):
+        try:
+            self.emit("Auto pairing request to " + peer.get("name", peer["ip"]))
+            self.pair(peer)
+        except Exception as exc:
+            self.emit("Auto pairing failed: " + str(exc))
 
     def pair(self, peer):
         result, pin = self.connect(peer, {"op": "pair"})

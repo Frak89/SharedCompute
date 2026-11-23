@@ -100,3 +100,27 @@ jobs:
         with:
           name: SharedCompute-LAN-Host
           path: dist/SharedCompute-LAN-Host.exe
+
+  mesh-host:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate Mesh Python
+        shell: pwsh
+        run: |
+          python -m pip install cryptography
+          python -m py_compile host/mesh.py
+          python -c "import sys; sys.path.insert(0, 'host'); import mesh; mesh.make_cert(); print(mesh.get_pin())"
+      - name: Build standalone SharedCompute-Mesh.exe
+        shell: pwsh
+        run: |
+          python -m pip install pyinstaller
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name SharedCompute-Mesh host/mesh.py
+          if (!(Test-Path dist/SharedCompute-Mesh.exe)) { throw 'Missing Mesh app' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SharedCompute-Mesh-Windows
+          path: dist/SharedCompute-Mesh.exe

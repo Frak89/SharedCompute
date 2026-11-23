@@ -35,8 +35,8 @@ def load_approved_mesh_nodes(base):
     locations = [
         base / "mesh-data" / "rpc_nodes.json",
         base.parent / "mesh-data" / "rpc_nodes.json",
-        Path(r"D:\\CYBER_AI\\SHAREDCOMPUTE\\mesh-data\\rpc_nodes.json"),
-        Path(r"E:\\CYBER_AI\\SHAREDCOMPUTE\\mesh-data\\rpc_nodes.json"),
+        Path(r"D:\CYBER_AI\SHAREDCOMPUTE\mesh-data\rpc_nodes.json"),
+        Path(r"E:\CYBER_AI\SHAREDCOMPUTE\mesh-data\rpc_nodes.json"),
     ]
     lines = []
     for file in locations:
@@ -51,7 +51,7 @@ def load_approved_mesh_nodes(base):
                     lines.append(line)
         except (OSError, ValueError, TypeError, KeyError):
             continue
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def connect_node(row, port=50552):

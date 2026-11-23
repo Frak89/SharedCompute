@@ -140,8 +140,8 @@ final class MeshPeer implements AutoCloseable {
      boolean autoJoin=(mode.equals("WORKER")&&(remoteRole.equals("MASTER")||remoteRole.equals("AUTO")))||
       (mode.equals("AUTO")&&(remoteRole.equals("MASTER")||(remoteRole.equals("AUTO")&&deviceId.compareTo(remoteId)>0)));
      if(autoJoin){
-      long now=SystemClock.elapsedRealtime();Long last=autoAttempts.get(remoteId);
-      if(last==null||now-last>120000){autoAttempts.put(remoteId,now);log("Auto pairing: "+other.optString("name"));pair(other);}
+      long now=SystemClock.elapsedRealtime();Long lastAttempt=autoAttempts.get(remoteId);
+      if(lastAttempt==null||now-lastAttempt>120000){autoAttempts.put(remoteId,now);log("Auto pairing: "+other.optString("name"));pair(other);}
       advertiseRpc(other);
      }
      if(other.getString("type").equals("discover")&&!fingerprint.isEmpty()){

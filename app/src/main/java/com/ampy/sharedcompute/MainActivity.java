@@ -17,7 +17,7 @@ import java.io.*;
 public class MainActivity extends Activity {
  final int teal=0xff43ffda,bg=0xff041619,panel=0xff0c2d31;
  final Handler h=new Handler(Looper.getMainLooper());
- TextView status,ram,log,meshState; EditText mem,threads; CheckBox charging;
+ TextView status,ram,log,meshState,localState,localChat; EditText mem,threads,localPrompt; CheckBox charging;
  Spinner role;ListView devices;ArrayAdapter<String> adapter;
  ArrayList<String> visibleIds=new ArrayList<>();String selectedId=null,pendingId=null;
  File pendingExport=null;
@@ -64,6 +64,9 @@ public class MainActivity extends Activity {
     break;
    }
   }
+  LocalAI ai=srv==null?null:srv.localAI;
+  if(localState!=null)localState.setText(ai==null?"LOCAL AI OFF":ai.modelName+"\n"+ai.state);
+  if(localChat!=null&&ai!=null&&!ai.output.equals(localChat.getText().toString()))localChat.setText(ai.output);
   log.setText(NodeService.getLog());h.postDelayed(this,1000);
  }};
  int dp(int n){return Math.round(n*getResources().getDisplayMetrics().density);}
@@ -163,6 +166,39 @@ public class MainActivity extends Activity {
    getSystemService(android.content.ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Private RPC pairing",line));
    Toast.makeText(this,"RPC details copied; keep the token private",Toast.LENGTH_LONG).show();
   });
+  col.addView(label("LOCAL QWEN / TEXT CHAT / OFFLINE",16));
+  localState=label("Select a local GGUF model; original file is kept.",12);col.addView(localState);
+  Button importBtn=button("CHOOSE EXISTING GGUF (one-time import)");col.addView(importBtn);
+  importBtn.setOnClickListener(v->{
+   if(NodeService.instance==null){Toast.makeText(this,"Start Mesh first (MASTER recommended).",Toast.LENGTH_LONG).show();return;}
+   Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+   pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);
+   startActivityForResult(pick,43);
+  });
+  Button startLocal=button("START CACHED LOCAL QWEN");col.addView(startLocal);
+  startLocal.setOnClickListener(v->{
+   NodeService n=NodeService.instance;
+   if(n!=null&&n.localAI!=null)n.localAI.startCached();
+   else Toast.makeText(this,"Start Mesh first",Toast.LENGTH_SHORT).show();
+  });
+  localChat=label("",13);localChat.setTextColor(0xffe5f5f2);
+  localChat.setTextIsSelectable(true);col.addView(localChat);
+  localPrompt=new EditText(this);localPrompt.setTextColor(0xffffffff);
+  localPrompt.setHint("Ask Qwen a question...");localPrompt.setHintTextColor(0xff92bbb7);
+  localPrompt.setSingleLine(false);localPrompt.setMinLines(2);col.addView(localPrompt);
+  Button sendLocal=button("SEND TO LOCAL QWEN");col.addView(sendLocal);
+  sendLocal.setOnClickListener(v->{
+   NodeService n=NodeService.instance;
+   if(n!=null&&n.localAI!=null){
+    n.localAI.ask(localPrompt.getText().toString());
+    localPrompt.setText("");
+   }else Toast.makeText(this,"Start Mesh first",Toast.LENGTH_SHORT).show();
+  });
+  Button stopLocal=button("STOP LOCAL QWEN (release RAM)");col.addView(stopLocal);
+  stopLocal.setOnClickListener(v->{
+   NodeService n=NodeService.instance;
+   if(n!=null&&n.localAI!=null)n.localAI.stop();
+  });
   col.addView(label("ACTIVITY / ERRORS",14));log=label("",11);log.setTextIsSelectable(true);col.addView(log);
   if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){
    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},1);
@@ -173,6 +209,9 @@ public class MainActivity extends Activity {
   if(request==41&&result==RESULT_OK&&data!=null){
    MeshPeer n=mesh();JSONObject peer=chosen();Uri uri=data.getData();
    if(n!=null&&peer!=null&&uri!=null)n.send(peer,uri);
+  }else if(request==43&&result==RESULT_OK&&data!=null&&data.getData()!=null){
+   NodeService n=NodeService.instance;
+   if(n!=null&&n.localAI!=null)n.localAI.importModel(data.getData());
   }else if(request==42){
    File source=pendingExport;pendingExport=null;
    if(result==RESULT_OK&&data!=null&&source!=null&&source.isFile()&&data.getData()!=null){

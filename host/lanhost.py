@@ -31,8 +31,12 @@ def parse_pairings(text):
 
 def connect_node(row, port=50552):
     ip,pin,token=row
-    raw=socket.create_connection((ip,port),timeout=8)
+    try:
+        raw=socket.create_connection((ip,port),timeout=8)
+    except OSError as exc:
+        raise ConnectionError("Android node "+ip+" port "+str(port)+" unreachable: "+str(exc)) from exc
     tls=None
+    phase="TLS handshake"
     try:
         ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.minimum_version=ssl.TLSVersion.TLSv1_2
@@ -41,10 +45,19 @@ def connect_node(row, port=50552):
         tls=ctx.wrap_socket(raw,server_hostname=ip)
         actual=hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
         if not hmac.compare_digest(actual,pin): raise ssl.SSLError("Android certificate does not match pasted fingerprint.")
+        phase="pairing authentication"
         tls.sendall(token.encode("ascii"))
-        if tls.recv(1)!=b"\x01": raise ConnectionError("Node rejected pairing or local RPC not ready.")
+        try:
+            reply=tls.recv(1)
+        except (ssl.SSLError, OSError) as exc:
+            raise ConnectionError("Android closed the tunnel after pairing. Check Android NODE LOG for RPC worker errors: "+str(exc)) from exc
+        if reply!=b"\x01":
+            raise ConnectionError("Android did not acknowledge pairing or local RPC is not ready. Check Android NODE LOG; reactivate and recopy pairing details.")
         tls.settimeout(None)
         return tls
+    except ssl.SSLError as exc:
+        (tls or raw).close()
+        raise ConnectionError("Android "+phase+" failed: "+str(exc)) from exc
     except BaseException:
         (tls or raw).close()
         raise
@@ -126,7 +139,7 @@ def main():
     style.configure("TButton",background=panel,foreground=fg,padding=6)
     top=ttk.Frame(root,padding=12);top.pack(fill="both",expand=True)
     base=Path(sys.executable if getattr(sys,"frozen",False) else __file__).resolve().parent
-    default=next((p for p in (base/"llama-server.exe",base.parent/"llama-server.exe",Path(r"E:\CYBER_AI\LLAMA_CPP\llama-server.exe")) if p.is_file()),base/"llama-server.exe")
+    default=next((p for p in (base/"llama-server.exe",base.parent/"llama-server.exe",Path(r"D:\CYBER_AI\SHAREDCOMPUTE\llama-server.exe"),Path(r"E:\CYBER_AI\LLAMA_CPP\llama-server.exe")) if p.is_file()),base/"llama-server.exe")
     server=tk.StringVar(value=str(default));model=tk.StringVar()
     def field(title,var,patterns=None):
         ttk.Label(top,text=title).pack(anchor="w")
@@ -140,6 +153,7 @@ def main():
     ttk.Label(top,text="SHAREDCOMPUTE // AUTHENTICATED WI-FI RPC").pack(anchor="w")
     field("llama-server.exe (same revision as Android APK)",server,[("Executable","*.exe")])
     field("Original GGUF — no copy",model,[("GGUF","*.gguf")])
+    ttk.Label(top,text="Mesh finds and pairs nodes automatically; RPC model loading is separate.").pack(anchor="w")
     ttk.Label(top,text="Android: activate node and paste ONE private pairing line per device below. Keep tokens secret.").pack(anchor="w")
     pairs=tk.Text(top,height=5,bg=panel,fg=fg,insertbackground=fg,wrap="word");pairs.pack(fill="x")
     row=ttk.Frame(top);row.pack(fill="x")
@@ -163,6 +177,13 @@ def main():
         def run():
             relays=[];proc=None
             try:
+                # Authenticate and verify the Android RPC worker BEFORE loading any GGUF.
+                for r in rows:
+                    if cancel.is_set():return
+                    emit("PREFLIGHT: testing TLS, certificate pin, pairing and RPC on "+r[0])
+                    with connect_node(r):
+                        pass
+                    emit("PREFLIGHT OK: "+r[0]+" authenticated; Android RPC ready")
                 for r in rows:
                     if cancel.is_set():return
                     relay=Relay(r,emit);relays.append(relay)
@@ -192,6 +213,16 @@ def main():
             else:log.insert("end",msg+"\n");log.see("end")
         root.after(80,poll)
     row=ttk.Frame(top);row.pack(fill="x")
+    def open_mesh():
+        mesh_exe=base/"SharedCompute-Mesh.exe"
+        mesh_src=base/"mesh.py"
+        if mesh_exe.is_file():
+            subprocess.Popen([str(mesh_exe)],cwd=str(base),creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+        elif mesh_src.is_file():
+            subprocess.Popen([sys.executable,str(mesh_src)],cwd=str(base))
+        else:
+            messagebox.showwarning("SharedCompute Mesh","Mesh application is missing; use the matching Windows LAN Host artifact.")
+    ttk.Button(row,text="OPEN MESH NETWORK",command=open_mesh).pack(side="left")
     startbtn=ttk.Button(row,text="START DISTRIBUTED MODEL",command=start);startbtn.pack(side="left")
     stopbtn=ttk.Button(row,text="STOP",command=stop,state="disabled");stopbtn.pack(side="left")
     def close():

@@ -12,9 +12,10 @@ cmake -S llama.cpp -B llama.cpp/build-android -G Ninja \
  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30 -DANDROID_STL=c++_static \
  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_RPC=ON -DGGML_NATIVE=OFF \
  -DGGML_OPENMP=OFF -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
- -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=OFF -DLLAMA_OPENSSL=OFF
-cmake --build llama.cpp/build-android --target ggml-rpc-server -j 2
+ -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_OPENSSL=OFF
+cmake --build llama.cpp/build-android --target ggml-rpc-server llama-server -j 2
 mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/assets
 cp llama.cpp/build-android/bin/ggml-rpc-server app/src/main/jniLibs/arm64-v8a/libsharedcompute_rpc.so
+cp llama.cpp/build-android/bin/llama-server app/src/main/jniLibs/arm64-v8a/libsharedcompute_llama.so
 cp llama.cpp/LICENSE app/src/main/assets/llama.cpp-LICENSE.txt
 printf '%s\n' "$LLAMA_REF" > app/src/main/assets/llama-revision.txt

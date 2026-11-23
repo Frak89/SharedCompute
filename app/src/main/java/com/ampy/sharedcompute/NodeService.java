@@ -12,13 +12,14 @@ public class NodeService extends Service {
  private final Handler main=new Handler(Looper.getMainLooper());
  private int budget;private boolean chargingOnly;private volatile boolean workerEnabled;
  volatile MeshPeer mesh;
+ volatile LocalAI localAI;
  private volatile LanRelay relay;
  static volatile String pairing="OFFLINE";
  static synchronized void add(String s){LOG.append(s).append('\n');if(LOG.length()>18000)LOG.delete(0,LOG.length()-18000);}
  static synchronized String getLog(){return LOG.toString();}
  String getPairing(){LanRelay r=relay;return r==null?"OFFLINE":r.pairing;}
  static volatile NodeService instance;
- @Override public void onCreate(){super.onCreate();instance=this;}
+ @Override public void onCreate(){super.onCreate();instance=this;localAI=new LocalAI(this);}
  @Override public IBinder onBind(Intent i){return null;}
  private ActivityManager.MemoryInfo memory(){ActivityManager.MemoryInfo m=new ActivityManager.MemoryInfo();getSystemService(ActivityManager.class).getMemoryInfo(m);return m;}
  private boolean charging(){Intent b=registerReceiver(null,new IntentFilter(Intent.ACTION_BATTERY_CHANGED));int s=b==null?0:b.getIntExtra(BatteryManager.EXTRA_STATUS,0);return s==BatteryManager.BATTERY_STATUS_CHARGING||s==BatteryManager.BATTERY_STATUS_FULL;}
@@ -65,5 +66,5 @@ public class NodeService extends Service {
  }catch(Exception e){add("RPC: "+e);}finally{main.post(()->{if(running)stopRpc("worker exited");});}},"rpc-worker").start();
  return START_NOT_STICKY;
  }
- @Override public void onDestroy(){running=false;MeshPeer m=mesh;mesh=null;if(m!=null)m.close();LanRelay r=relay;relay=null;if(r!=null)r.close();pairing="OFFLINE";workerPid=-1;main.removeCallbacks(guard);Process p=worker;if(p!=null)p.destroyForcibly();if(lock!=null&&lock.isHeld())lock.release();status="OFFLINE";if(instance==this)instance=null;stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();}
+ @Override public void onDestroy(){running=false;LocalAI ai=localAI;localAI=null;if(ai!=null)ai.close();MeshPeer m=mesh;mesh=null;if(m!=null)m.close();LanRelay r=relay;relay=null;if(r!=null)r.close();pairing="OFFLINE";workerPid=-1;main.removeCallbacks(guard);Process p=worker;if(p!=null)p.destroyForcibly();if(lock!=null&&lock.isHeld())lock.release();status="OFFLINE";if(instance==this)instance=null;stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();}
 }

@@ -13,6 +13,7 @@ import android.net.Uri;
 import android.os.SystemClock;
 import org.json.JSONObject;
 import java.util.*;
+import java.io.*;
 
 public class MainActivity extends Activity {
  final int teal=0xff43ffda,bg=0xff041619,panel=0xff0c2d31;
@@ -21,6 +22,7 @@ public class MainActivity extends Activity {
  Spinner role;ListView devices;ArrayAdapter<String> deviceAdapter;
  final ArrayList<String> deviceIds=new ArrayList<>();
  String selectedDevice=null,shownRequest=null;
+ File exportSource=null;
  final Runnable refresh=new Runnable(){public void run(){
  ActivityManager.MemoryInfo m=new ActivityManager.MemoryInfo();getSystemService(ActivityManager.class).getMemoryInfo(m);
  ram.setText("RAM AVAILABLE   "+m.availMem/1048576+" / "+m.totalMem/1048576+" MiB\nCPU THREADS     "+Runtime.getRuntime().availableProcessors()+"\nTHERMAL STATUS  "+getSystemService(PowerManager.class).getCurrentThermalStatus());
@@ -86,11 +88,33 @@ public class MainActivity extends Activity {
  Button send=button("SEND FILE TO MASTER");col.addView(send);send.setOnClickListener(v->{JSONObject peer=selected();if(peer==null){Toast.makeText(this,"Select a master",Toast.LENGTH_SHORT).show();return;}
   Intent picker=new Intent(Intent.ACTION_OPEN_DOCUMENT);picker.setType("*/*");picker.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(picker,41);
  });
+ Button inbox=button("INBOX · EXPORT RECEIVED FILE");col.addView(inbox);
+ inbox.setOnClickListener(v->{
+  File dir=new File(getFilesDir(),"mesh-inbox");
+  File[] files=dir.listFiles(file->file.isFile());
+  if(files==null||files.length==0){Toast.makeText(this,"No files received yet",Toast.LENGTH_SHORT).show();return;}
+  Arrays.sort(files,(a,b)->Long.compare(b.lastModified(),a.lastModified()));
+  String[] names=new String[files.length];for(int i=0;i<files.length;i++)names[i]=files[i].getName();
+  new AlertDialog.Builder(this).setTitle("Received files").setItems(names,(d,which)->{
+   exportSource=files[which];
+   Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+   save.addCategory(Intent.CATEGORY_OPENABLE);save.setType("application/octet-stream");
+   save.putExtra(Intent.EXTRA_TITLE,exportSource.getName());startActivityForResult(save,42);
+  }).show();
+ });
  col.addView(label("NODE LOG",14));log=label("",11);log.setTextIsSelectable(true);col.addView(log);
  if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},1);
  }
  @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);
   if(request==41&&result==RESULT_OK&&data!=null){MeshPeer m=mesh();JSONObject peer=selected();Uri uri=data.getData();if(m!=null&&peer!=null&&uri!=null)m.send(peer,uri);}
+  if(request==42&&result==RESULT_OK&&data!=null&&exportSource!=null){
+   try(InputStream in=new FileInputStream(exportSource);OutputStream out=getContentResolver().openOutputStream(data.getData())){
+    if(out==null)throw new IOException("Unable to open target");byte[] buffer=new byte[8192];int n;
+    while((n=in.read(buffer))>=0)out.write(buffer,0,n);
+    Toast.makeText(this,"File saved",Toast.LENGTH_SHORT).show();
+   }catch(Exception e){Toast.makeText(this,"Export failed: "+e.getMessage(),Toast.LENGTH_LONG).show();}
+   finally{exportSource=null;}
+  }
  }
  @Override protected void onStart(){super.onStart();h.post(refresh);}
  @Override protected void onStop(){h.removeCallbacks(refresh);super.onStop();}

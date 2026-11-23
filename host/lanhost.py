@@ -31,8 +31,12 @@ def parse_pairings(text):
 
 def connect_node(row, port=50552):
     ip,pin,token=row
-    raw=socket.create_connection((ip,port),timeout=8)
+    try:
+        raw=socket.create_connection((ip,port),timeout=8)
+    except OSError as exc:
+        raise ConnectionError("Android node "+ip+" port "+str(port)+" unreachable: "+str(exc)) from exc
     tls=None
+    phase="TLS handshake"
     try:
         ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.minimum_version=ssl.TLSVersion.TLSv1_2
@@ -41,10 +45,19 @@ def connect_node(row, port=50552):
         tls=ctx.wrap_socket(raw,server_hostname=ip)
         actual=hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
         if not hmac.compare_digest(actual,pin): raise ssl.SSLError("Android certificate does not match pasted fingerprint.")
+        phase="pairing authentication"
         tls.sendall(token.encode("ascii"))
-        if tls.recv(1)!=b"\x01": raise ConnectionError("Node rejected pairing or local RPC not ready.")
+        try:
+            reply=tls.recv(1)
+        except (ssl.SSLError, OSError) as exc:
+            raise ConnectionError("Android closed the tunnel after pairing. Check Android NODE LOG for RPC worker errors: "+str(exc)) from exc
+        if reply!=b"\x01":
+            raise ConnectionError("Android did not acknowledge pairing or local RPC is not ready. Check Android NODE LOG; reactivate and recopy pairing details.")
         tls.settimeout(None)
         return tls
+    except ssl.SSLError as exc:
+        (tls or raw).close()
+        raise ConnectionError("Android "+phase+" failed: "+str(exc)) from exc
     except BaseException:
         (tls or raw).close()
         raise
@@ -163,6 +176,13 @@ def main():
         def run():
             relays=[];proc=None
             try:
+                # Authenticate and verify the Android RPC worker BEFORE loading any GGUF.
+                for r in rows:
+                    if cancel.is_set():return
+                    emit("PREFLIGHT: testing TLS, certificate pin, pairing and RPC on "+r[0])
+                    with connect_node(r):
+                        pass
+                    emit("PREFLIGHT OK: "+r[0]+" authenticated; Android RPC ready")
                 for r in rows:
                     if cancel.is_set():return
                     relay=Relay(r,emit);relays.append(relay)

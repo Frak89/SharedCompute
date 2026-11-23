@@ -12,6 +12,7 @@ public class NodeService extends Service {
  private final Handler main=new Handler(Looper.getMainLooper());
  private int budget;private boolean chargingOnly;
  private volatile LanRelay relay;
+ volatile MeshPeer mesh;
  static volatile String pairing="OFFLINE";
  static synchronized void add(String s){LOG.append(s).append('\n');if(LOG.length()>18000)LOG.delete(0,LOG.length()-18000);}
  static synchronized String getLog(){return LOG.toString();}
@@ -30,10 +31,16 @@ public class NodeService extends Service {
  PendingIntent open=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE);
  startForeground(52,new Notification.Builder(this,"node").setContentTitle("SharedCompute active").setContentText("Local RPC worker • open app to stop").setSmallIcon(android.R.drawable.stat_sys_upload).setContentIntent(open).setOngoing(true).build());
  if(i==null){stopSelf();return START_NOT_STICKY;}
+ String meshRole=i.getStringExtra("mesh_role");if(!"MASTER".equals(meshRole)&&!"WORKER".equals(meshRole)&&!"AUTO".equals(meshRole))meshRole="AUTO";
+ boolean workerEnabled=!"MASTER".equals(meshRole);
  budget=i.getIntExtra("mem",1024);int threads=i.getIntExtra("threads",4);chargingOnly=i.getBooleanExtra("charging",true);
- ActivityManager.MemoryInfo m=memory();if(budget<128||threads<1||threads>Runtime.getRuntime().availableProcessors()||(long)budget*1048576>m.availMem-Math.max(m.threshold,512L*1048576)||unsafe()!=null){add("Start refused: check memory, charging, thermal status and threads");stopSelf();return START_NOT_STICKY;}
- File exe=new File(getApplicationInfo().nativeLibraryDir,"libsharedcompute_rpc.so");if(!exe.canExecute()){add("RPC executable missing: use the CI-built APK");stopSelf();return START_NOT_STICKY;}
- lock=getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"SharedCompute:RPC");lock.acquire();running=true;status="STARTING // RPC";main.post(guard);
+ ActivityManager.MemoryInfo m=memory();if(workerEnabled&&(budget<128||threads<1||threads>Runtime.getRuntime().availableProcessors()||(long)budget*1048576>m.availMem-Math.max(m.threshold,512L*1048576)||unsafe()!=null)){add("Start refused: check memory, charging, thermal status and threads");stopSelf();return START_NOT_STICKY;}
+ File exe=new File(getApplicationInfo().nativeLibraryDir,"libsharedcompute_rpc.so");if(workerEnabled&&!exe.canExecute()){add("RPC executable missing: use the CI-built APK");stopSelf();return START_NOT_STICKY;}
+ lock=getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"SharedCompute:Mesh");lock.acquire();running=true;
+ status=workerEnabled?"MESH + RPC STARTING":"MESH MASTER";
+ mesh=new MeshPeer(this,meshRole);mesh.start();
+ if(!workerEnabled)return START_NOT_STICKY;
+ main.post(guard);
  LanRelay activeRelay=new LanRelay();relay=activeRelay;pairing="Preparing secure LAN...";
  new Thread(()->{try{activeRelay.run();}catch(Exception e){if(running&&relay==activeRelay){add("LAN TLS: "+e);main.post(()->{if(relay==activeRelay)stopSelf();});}}},"lan-tls").start();
  new Thread(()->{try{
@@ -43,5 +50,5 @@ public class NodeService extends Service {
  }catch(Exception e){add("RPC: "+e);}finally{main.post(()->{if(running)stopSelf();});}},"rpc-worker").start();
  return START_NOT_STICKY;
  }
- @Override public void onDestroy(){running=false;LanRelay r=relay;relay=null;if(r!=null)r.close();pairing="OFFLINE";workerPid=-1;main.removeCallbacks(guard);Process p=worker;if(p!=null)p.destroyForcibly();if(lock!=null&&lock.isHeld())lock.release();status="OFFLINE";if(instance==this)instance=null;stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();}
+ @Override public void onDestroy(){running=false;MeshPeer m=mesh;mesh=null;if(m!=null)m.close();LanRelay r=relay;relay=null;if(r!=null)r.close();pairing="OFFLINE";workerPid=-1;main.removeCallbacks(guard);Process p=worker;if(p!=null)p.destroyForcibly();if(lock!=null&&lock.isHeld())lock.release();status="OFFLINE";if(instance==this)instance=null;stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();}
 }

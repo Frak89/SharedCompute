@@ -17,11 +17,12 @@ import java.security.cert.Certificate;
 import java.util.*;
 import java.util.concurrent.*;
 import javax.net.ssl.*;
+import javax.security.auth.x500.X500Principal;
 
 /** Secure Mesh membership and small-file control plane. NOT a GGUF inference host. */
 final class MeshPeer implements AutoCloseable {
  static final int DISCOVERY=50555, TLS_PORT=50554, FILE_LIMIT=2*1024*1024, FRAME_LIMIT=3*1024*1024;
- static final String GROUP="239.255.50.55", PROTOCOL="sharedcompute-mesh-v1", ALIAS="sharedcompute-mesh-v1";
+ static final String GROUP="239.255.50.55", PROTOCOL="sharedcompute-mesh-v1", ALIAS="sharedcompute-mesh-tls-v2";
  final Service service; final String mode,deviceId,name; final SharedPreferences prefs;
  final ConcurrentHashMap<String,JSONObject> peers=new ConcurrentHashMap<>();
  final ConcurrentHashMap<String,Pending> pending=new ConcurrentHashMap<>();
@@ -49,23 +50,33 @@ final class MeshPeer implements AutoCloseable {
   if(!ks.containsAlias(ALIAS)){
    KeyPairGenerator gen=KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA,"AndroidKeyStore");
    gen.initialize(new KeyGenParameterSpec.Builder(ALIAS,KeyProperties.PURPOSE_SIGN|KeyProperties.PURPOSE_DECRYPT)
-    .setKeySize(2048).setDigests(KeyProperties.DIGEST_SHA256,KeyProperties.DIGEST_SHA384,KeyProperties.DIGEST_SHA512)
+    .setKeySize(2048).setCertificateSubject(new X500Principal("CN=SharedCompute Mesh"))
+    .setDigests(KeyProperties.DIGEST_NONE,KeyProperties.DIGEST_SHA256,KeyProperties.DIGEST_SHA384,KeyProperties.DIGEST_SHA512)
     .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1,KeyProperties.SIGNATURE_PADDING_RSA_PSS)
-    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1).build());
+    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE,KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1).build());
    gen.generateKeyPair();
   }
   Certificate cert=ks.getCertificate(ALIAS);
   if(cert==null)throw new GeneralSecurityException("AndroidKeyStore certificate unavailable");
   fingerprint=hex(sha(cert.getEncoded()));
   KeyManagerFactory km=KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());km.init(ks,null);
-  SSLContext ctx=SSLContext.getInstance("TLS");ctx.init(km.getKeyManagers(),null,new SecureRandom());return ctx;
+  boolean keyUsable=false;
+  for(KeyManager manager:km.getKeyManagers()){
+   if(manager instanceof X509KeyManager){
+    X509KeyManager x=(X509KeyManager)manager;
+    if(x.getPrivateKey(ALIAS)!=null && x.getCertificateChain(ALIAS)!=null)keyUsable=true;
+   }
+  }
+  if(!keyUsable)throw new GeneralSecurityException("TLS private key or certificate chain not available to the Android TLS provider");
+  log("TLS identity ready (AndroidKeyStore RSA, TLS 1.2); fingerprint ends "+fingerprint.substring(56));
+  SSLContext ctx=SSLContext.getInstance("TLSv1.2");ctx.init(km.getKeyManagers(),null,new SecureRandom());return ctx;
  }
  private void serve(){
   try{
    SSLContext ctx=serverContext();
    SSLServerSocket server=(SSLServerSocket)ctx.getServerSocketFactory().createServerSocket();tls=server;
    server.setReuseAddress(true);server.bind(new InetSocketAddress("0.0.0.0",TLS_PORT));
-   server.setEnabledProtocols(new String[]{"TLSv1.2","TLSv1.3"});
+   server.setEnabledProtocols(new String[]{"TLSv1.2"});
    log("TLS ready : "+TLS_PORT+" role="+mode);
    while(!closed){
     SSLSocket s=(SSLSocket)server.accept();
@@ -91,7 +102,17 @@ final class MeshPeer implements AutoCloseable {
  }
  private void serveOne(SSLSocket socket){
   try(SSLSocket c=socket){
-   c.setSoTimeout(75000);c.startHandshake();JSONObject req=readFrame(c.getInputStream());
+   c.setEnabledProtocols(new String[]{"TLSv1.2"});
+   c.setSoTimeout(75000);
+   try{
+    c.startHandshake();
+   }catch(SSLException ex){
+    log("Incoming TLS handshake failed from "+c.getInetAddress().getHostAddress()+": "+ex.getClass().getSimpleName()+": "+ex.getMessage()+
+      (ex.getCause()==null?"":"; cause="+ex.getCause().getClass().getSimpleName()+": "+ex.getCause().getMessage()));
+    return;
+   }
+   log("TLS handshake OK from "+c.getInetAddress().getHostAddress()+" ("+c.getSession().getProtocol()+")");
+   JSONObject req=readFrame(c.getInputStream());
    String id=req.optString("device_id","");
    if(id.length()<1||id.length()>100)throw new IOException("Invalid device identity");
    String stored=prefs.getString("trust_"+id,""),supplied=req.optString("token","");
@@ -205,6 +226,7 @@ final class MeshPeer implements AutoCloseable {
   SSLContext context=SSLContext.getInstance("TLS");context.init(null,trust,new SecureRandom());
   try(SSLSocket c=(SSLSocket)context.getSocketFactory().createSocket()){
    c.connect(new InetSocketAddress(peer.getString("ip"),peer.optInt("port",TLS_PORT)),8000);
+   c.setEnabledProtocols(new String[]{"TLSv1.2"});
    c.setSoTimeout(75000);c.startHandshake();
    Certificate cert=c.getSession().getPeerCertificates()[0];
    if(!MessageDigest.isEqual(sha(cert.getEncoded()),unhex(pin)))throw new SecurityException("TLS pin mismatch");

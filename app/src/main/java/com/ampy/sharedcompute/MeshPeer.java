@@ -28,6 +28,7 @@ final class MeshPeer implements AutoCloseable {
  final ConcurrentHashMap<String,JSONObject> peers=new ConcurrentHashMap<>();
  final ConcurrentHashMap<String,Pending> pending=new ConcurrentHashMap<>();
  final ConcurrentHashMap<String,Long> autoAttempts=new ConcurrentHashMap<>();
+ final ConcurrentHashMap<String,String> rpcAnnounced=new ConcurrentHashMap<>();
  final ExecutorService pool=Executors.newFixedThreadPool(8);
  volatile boolean closed;volatile SSLServerSocket tls;volatile MulticastSocket udp;volatile String fingerprint="";
  WifiManager.MulticastLock wifiLock;
@@ -87,6 +88,14 @@ final class MeshPeer implements AutoCloseable {
     p.latch.await(60,TimeUnit.SECONDS);pending.remove(p.id);
     JSONObject reply=new JSONObject().put("status",p.allow?"ok":"denied");if(p.allow)reply.put("token",p.token);
     writeFrame(c.getOutputStream(),reply);
+   }else if(op.equals("rpc_info")){
+    if(!auth||mode.equals("WORKER")){writeFrame(c.getOutputStream(),new JSONObject().put("status","denied"));return;}
+    String rpc=req.optString("rpc","");String[] pieces=rpc.split("\\|");
+    if(pieces.length!=3||!pieces[1].trim().matches("[0-9a-fA-F]{64}")||!pieces[2].trim().matches("[0-9a-fA-F]{64}")){
+     writeFrame(c.getOutputStream(),new JSONObject().put("status","error"));return;
+    }
+    prefs.edit().putString("rpc_"+other,rpc).apply();log("Trusted RPC worker connected: "+other);
+    writeFrame(c.getOutputStream(),new JSONObject().put("status","ok"));
    }else if(op.equals("send")){
     if(!auth){writeFrame(c.getOutputStream(),new JSONObject().put("status","denied"));return;}
     String encoded=req.optString("data","");if(encoded.length()>2800000)throw new IOException("File too big");
@@ -133,6 +142,7 @@ final class MeshPeer implements AutoCloseable {
      if(autoJoin){
       long now=SystemClock.elapsedRealtime();Long last=autoAttempts.get(remoteId);
       if(last==null||now-last>120000){autoAttempts.put(remoteId,now);log("Auto pairing: "+other.optString("name"));pair(other);}
+      advertiseRpc(other);
      }
      if(other.getString("type").equals("discover")&&!fingerprint.isEmpty()){
       byte[] reply=offer().toString().getBytes(StandardCharsets.UTF_8);ms.send(new DatagramPacket(reply,reply.length,p.getAddress(),p.getPort()));
@@ -160,11 +170,30 @@ final class MeshPeer implements AutoCloseable {
   }
  }
  private static byte[] hexDecode(String x){if(!x.matches("[0-9a-fA-F]{64}"))throw new IllegalArgumentException("Bad fingerprint");byte[] b=new byte[32];for(int i=0;i<32;i++)b[i]=(byte)Integer.parseInt(x.substring(i*2,i*2+2),16);return b;}
+ void advertiseRpc(JSONObject peer){
+  if(mode.equals("MASTER"))return;
+  NodeService svc=NodeService.instance;if(svc==null)return;
+  String all=svc.getPairing(),line=null;
+  for(String candidate:all.split("\\n"))if(candidate.contains(" | ")){
+   String[] parts=candidate.split("\\|");
+   if(parts.length==3&&parts[1].trim().matches("[0-9a-fA-F]{64}")&&parts[2].trim().matches("[0-9a-fA-F]{64}")){line=candidate.trim();break;}
+  }
+  if(line==null)return;
+  String peerId=peer.optString("device_id");
+  if(prefs.getString("trust_"+peerId,"").isEmpty())return;
+  if(line.equals(rpcAnnounced.get(peerId)))return;
+  final String sent=line;rpcAnnounced.put(peerId,line);
+  new Thread(()->{try{
+   JSONObject res=connect(peer,new JSONObject().put("op","rpc_info").put("rpc",sent));
+   if(!res.optString("status").equals("ok"))rpcAnnounced.remove(peerId,sent);
+   else log("RPC details securely advertised to "+peer.optString("name"));
+  }catch(Exception e){rpcAnnounced.remove(peerId,sent);log("RPC registration: "+e.getMessage());}},"mesh-rpc-advertise").start();
+ }
  void pair(JSONObject peer){new Thread(()->{try{
   JSONObject result=connect(peer,new JSONObject().put("op","pair"));
   if(result.optString("status").equals("ok")){
    String token=result.optString("token","");if(!token.isEmpty())prefs.edit().putString("trust_"+peer.optString("device_id"),token).apply();
-   log("Paired with "+peer.optString("name"));
+   log("Paired with "+peer.optString("name"));advertiseRpc(peer);
   }else log("Pairing rejected or timed out by "+peer.optString("name"));
  }catch(Exception e){log("Pair failed: "+e.getMessage());}},"mesh-pair").start();}
  void send(JSONObject peer,android.net.Uri uri){new Thread(()->{try{

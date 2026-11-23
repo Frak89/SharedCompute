@@ -11,6 +11,7 @@ import android.view.*;
 import android.widget.*;
 import org.json.JSONObject;
 import java.util.*;
+import java.io.*;
 
 /** SharedCompute Mesh UI — each Android device may be coordinator or worker. */
 public class MainActivity extends Activity {
@@ -19,6 +20,7 @@ public class MainActivity extends Activity {
  TextView status,ram,log,meshState; EditText mem,threads; CheckBox charging;
  Spinner role;ListView devices;ArrayAdapter<String> adapter;
  ArrayList<String> visibleIds=new ArrayList<>();String selectedId=null,pendingId=null;
+ File pendingExport=null;
  final Runnable refresh=new Runnable(){public void run(){
   ActivityManager.MemoryInfo info=new ActivityManager.MemoryInfo();
   getSystemService(ActivityManager.class).getMemoryInfo(info);
@@ -134,6 +136,26 @@ public class MainActivity extends Activity {
    Intent picker=new Intent(Intent.ACTION_OPEN_DOCUMENT);picker.setType("*/*");
    picker.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(picker,41);
   });
+  Button inbox=button("RECEIVED FILES / SAVE TO PHONE");col.addView(inbox);
+  inbox.setOnClickListener(v->{
+   File folder=new File(getFilesDir(),"mesh-inbox");
+   File[] entries=folder.listFiles(file->file.isFile());
+   if(entries==null||entries.length==0){
+    Toast.makeText(this,"No received files yet",Toast.LENGTH_SHORT).show();return;
+   }
+   Arrays.sort(entries,Comparator.comparingLong(File::lastModified).reversed());
+   String[] names=new String[entries.length];
+   for(int i=0;i<entries.length;i++)names[i]=entries[i].getName()+"  /  "+(entries[i].length()/1024)+" KiB";
+   new AlertDialog.Builder(this).setTitle("Received files")
+    .setItems(names,(dialog,index)->{
+     pendingExport=entries[index];
+     Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+     save.addCategory(Intent.CATEGORY_OPENABLE);
+     save.setType("application/octet-stream");
+     save.putExtra(Intent.EXTRA_TITLE,pendingExport.getName());
+     startActivityForResult(save,42);
+    }).show();
+  });
   Button rpc=button("COPY LEGACY RPC PAIRING (OPTIONAL)");col.addView(rpc);
   rpc.setOnClickListener(v->{
    NodeService srv=NodeService.instance;String line=srv==null?"":srv.getPairing();
@@ -151,6 +173,17 @@ public class MainActivity extends Activity {
   if(request==41&&result==RESULT_OK&&data!=null){
    MeshPeer n=mesh();JSONObject peer=chosen();Uri uri=data.getData();
    if(n!=null&&peer!=null&&uri!=null)n.send(peer,uri);
+  }else if(request==42){
+   File source=pendingExport;pendingExport=null;
+   if(result==RESULT_OK&&data!=null&&source!=null&&source.isFile()&&data.getData()!=null){
+    try(InputStream input=new FileInputStream(source);
+        OutputStream output=getContentResolver().openOutputStream(data.getData())){
+     if(output==null)throw new IOException("Cannot open destination");
+     byte[] bytes=new byte[8192];int count;
+     while((count=input.read(bytes))!=-1)output.write(bytes,0,count);
+     Toast.makeText(this,"File saved successfully",Toast.LENGTH_SHORT).show();
+    }catch(Exception ex){Toast.makeText(this,"Save error: "+ex.getMessage(),Toast.LENGTH_LONG).show();}
+   }
   }
  }
  @Override protected void onStart(){super.onStart();h.post(refresh);}

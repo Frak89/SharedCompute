@@ -120,6 +120,7 @@ jobs:
           python -m pip install pyinstaller
           python -m PyInstaller --noconfirm --clean --onefile --windowed --name SharedCompute-Mesh host/mesh.py
           if (!(Test-Path dist/SharedCompute-Mesh.exe)) { throw 'Missing Mesh app' }
+          Copy-Item host/Start-SharedCompute-Mesh.bat dist/Start-SharedCompute-Mesh.bat
       - uses: actions/upload-artifact@v4
         with:
           name: SharedCompute-Mesh-Windows

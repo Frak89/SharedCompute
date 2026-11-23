@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import secrets
 import socket
 import ssl
@@ -124,6 +125,7 @@ class Mesh:
         self.udp = None
         self.inbox = DATA / "inbox"
         self.inbox.mkdir(exist_ok=True)
+        self.rpc_file = DATA / "rpc_nodes.json"
 
     def emit(self, message):
         self.on_event("log", message)
@@ -188,6 +190,28 @@ class Mesh:
                         with self.lock:
                             self.pending.pop(request_id, None)
                         send_frame(conn, {"status": "ok", "token": item["token"]} if item["allow"] else {"status": "denied"})
+                elif req.get("op") == "rpc_info":
+                    if not authenticated or self.mode == "WORKER":
+                        send_frame(conn, {"status": "denied"})
+                        return
+                    details = req.get("rpc", "")
+                    parts = [p.strip() for p in details.split("|")]
+                    if len(parts) != 3 or not all(re.fullmatch(r"[0-9a-fA-F]{64}", x) for x in parts[1:]):
+                        send_frame(conn, {"status": "error", "detail": "Invalid RPC credentials"})
+                        return
+                    with self.lock:
+                        try:
+                            nodes = json.loads(self.rpc_file.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            nodes = {}
+                        # Use authenticated connection source IP rather than trusting an advertised address.
+                        nodes[device] = {"ip": addr[0], "pin": parts[1].lower(),
+                                         "token": parts[2].lower(), "updated": time.time()}
+                        tmp = self.rpc_file.with_suffix(".tmp")
+                        tmp.write_text(json.dumps(nodes, indent=2), encoding="utf-8")
+                        tmp.replace(self.rpc_file)
+                    self.emit("Authenticated RPC node registered: " + addr[0])
+                    send_frame(conn, {"status": "ok"})
                 elif req.get("op") == "send":
                     if not authenticated:
                         send_frame(conn, {"status": "denied"})

@@ -44,6 +44,7 @@ jobs:
       - name: Verify APK contains ARM64 executable
         run: |
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep lib/arm64-v8a/libsharedcompute_rpc.so
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep lib/arm64-v8a/libsharedcompute_llama.so
           cp app/build/outputs/apk/debug/app-debug.apk SharedCompute.apk
       - uses: actions/upload-artifact@v4
         with:

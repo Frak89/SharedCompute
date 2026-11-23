@@ -42,12 +42,12 @@ public class NodeService extends Service {
  if(!"MASTER".equals(role)&&!"WORKER".equals(role)&&!"AUTO".equals(role))role="AUTO";
  workerEnabled=!"MASTER".equals(role);
  budget=i.getIntExtra("mem",1024);int threads=i.getIntExtra("threads",4);chargingOnly=i.getBooleanExtra("charging",true);
+ final File exe=new File(getApplicationInfo().nativeLibraryDir,"libsharedcompute_rpc.so");
  if(workerEnabled){
   ActivityManager.MemoryInfo m=memory();
   if(budget<128||threads<1||threads>Runtime.getRuntime().availableProcessors()||(long)budget*1048576>m.availMem-Math.max(m.threshold,512L*1048576)||unsafe()!=null){
    add("RPC not started: insufficient resources, temperature or charging requirement.");workerEnabled=false;
   }else{
-   File exe=new File(getApplicationInfo().nativeLibraryDir,"libsharedcompute_rpc.so");
    if(!exe.canExecute()){add("RPC executable unavailable; Mesh will still work.");workerEnabled=false;}
   }
  }

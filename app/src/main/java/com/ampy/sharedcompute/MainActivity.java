@@ -1,44 +1,157 @@
 package com.ampy.sharedcompute;
+
 import android.Manifest;
 import android.app.*;
 import android.os.*;
 import android.content.*;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
-import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.view.*;
 import android.widget.*;
+import org.json.JSONObject;
+import java.util.*;
 
+/** SharedCompute Mesh UI — each Android device may be coordinator or worker. */
 public class MainActivity extends Activity {
  final int teal=0xff43ffda,bg=0xff041619,panel=0xff0c2d31;
  final Handler h=new Handler(Looper.getMainLooper());
- TextView ram,status,log,pairing; EditText mem,threads; CheckBox charging;
+ TextView status,ram,log,meshState; EditText mem,threads; CheckBox charging;
+ Spinner role;ListView devices;ArrayAdapter<String> adapter;
+ ArrayList<String> visibleIds=new ArrayList<>();String selectedId=null,pendingId=null;
  final Runnable refresh=new Runnable(){public void run(){
- ActivityManager.MemoryInfo m=new ActivityManager.MemoryInfo();getSystemService(ActivityManager.class).getMemoryInfo(m);
- ram.setText("RAM AVAILABLE   "+m.availMem/1048576+" / "+m.totalMem/1048576+" MiB\nCPU THREADS     "+Runtime.getRuntime().availableProcessors()+"\nTHERMAL STATUS  "+getSystemService(PowerManager.class).getCurrentThermalStatus());
- status.setText(NodeService.status);NodeService svc=NodeService.instance;String p=svc==null?"OFFLINE":svc.getPairing();if(!p.contentEquals(pairing.getText()))pairing.setText(p);log.setText(NodeService.getLog());h.postDelayed(this,1000);
+  ActivityManager.MemoryInfo info=new ActivityManager.MemoryInfo();
+  getSystemService(ActivityManager.class).getMemoryInfo(info);
+  ram.setText("RAM "+info.availMem/1048576+" / "+info.totalMem/1048576+
+   " MiB   CPU "+Runtime.getRuntime().availableProcessors()+" threads   THERMAL "+
+   getSystemService(PowerManager.class).getCurrentThermalStatus());
+  status.setText(NodeService.status);
+  NodeService srv=NodeService.instance;
+  MeshPeer mesh=srv==null?null:srv.mesh;
+  meshState.setText(mesh==null?"MESH OFFLINE":"MESH ONLINE   UDP 50555 / TLS 50554   "+mesh.mode);
+  if(mesh==null){
+   if(!visibleIds.isEmpty()){visibleIds.clear();adapter.clear();}
+  }else{
+   ArrayList<JSONObject> found=new ArrayList<>(mesh.peers.values());
+   found.sort(Comparator.comparing(p->p.optString("device_id","")));
+   ArrayList<String> labels=new ArrayList<>(),ids=new ArrayList<>();
+   for(JSONObject peer:found){
+    if(SystemClock.elapsedRealtime()-peer.optLong("seen",0)>20000)continue;
+    String id=peer.optString("device_id","");
+    ids.add(id);
+    boolean paired=!mesh.prefs.getString("trust_"+id,"").isEmpty();
+    labels.add(peer.optString("name","device")+"  /  "+peer.optString("role","?")+
+      "  /  "+peer.optString("ip","?")+"  /  "+(paired?"PAIRED":"NEW"));
+   }
+   if(!visibleIds.equals(ids)||adapter.getCount()!=labels.size()){
+    visibleIds.clear();visibleIds.addAll(ids);adapter.clear();adapter.addAll(labels);
+   }else{
+    for(int j=0;j<labels.size();j++){
+     if(!labels.get(j).equals(adapter.getItem(j))){adapter.clear();adapter.addAll(labels);break;}
+    }
+   }
+   for(MeshPeer.Pending pending:mesh.pending.values()){
+    if(pending.id.equals(pendingId))continue;
+    pendingId=pending.id;
+    new AlertDialog.Builder(MainActivity.this)
+     .setTitle("SharedCompute  /  New pairing")
+     .setMessage("Allow device \""+pending.name+"\" to join this Master?\n\nOnly approve a device you recognize. Discovery names can be spoofed.")
+     .setPositiveButton("APPROVE",(d,w)->{mesh.approve(pending.id,true);pendingId=null;})
+     .setNegativeButton("DENY",(d,w)->{mesh.approve(pending.id,false);pendingId=null;})
+     .setOnCancelListener(d->{mesh.approve(pending.id,false);pendingId=null;}).show();
+    break;
+   }
+  }
+  log.setText(NodeService.getLog());h.postDelayed(this,1000);
  }};
  int dp(int n){return Math.round(n*getResources().getDisplayMetrics().density);}
- TextView label(String s,int size){TextView v=new TextView(this);v.setText(s);v.setTextColor(teal);v.setTextSize(size);v.setTypeface(Typeface.MONOSPACE);v.setPadding(0,dp(8),0,dp(8));return v;}
- Button button(String s){Button b=new Button(this);b.setText(s);b.setTextColor(teal);GradientDrawable d=new GradientDrawable();d.setColor(panel);d.setCornerRadius(dp(8));d.setStroke(dp(1),teal);b.setBackground(d);return b;}
- EditText field(String s){EditText e=new EditText(this);e.setTextColor(teal);e.setInputType(2);e.setText(s);return e;}
- @Override public void onCreate(Bundle b){super.onCreate(b);
- ScrollView page=new ScrollView(this);page.setFillViewport(true);page.setBackgroundColor(bg);
- LinearLayout col=new LinearLayout(this);col.setOrientation(1);col.setPadding(dp(16),dp(16),dp(16),dp(16));page.addView(col);setContentView(page);
- page.setOnApplyWindowInsetsListener((v,insets)->{android.graphics.Insets i=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());v.setPadding(i.left,i.top,i.right,i.bottom);return insets;});page.requestApplyInsets();
- col.addView(label("SHARED // COMPUTE",26));col.addView(label("CYBER TIEL • ARM64 NODE",13));
- status=label("OFFLINE",19);col.addView(status);ram=label("",15);col.addView(ram);
- col.addView(label("MEMORY BUDGET [MiB] / guard, not reservation",12));mem=field(getPreferences(0).getString("mem","1024"));col.addView(mem);
- col.addView(label("CPU THREADS",12));threads=field(getPreferences(0).getString("threads","4"));col.addView(threads);
- charging=new CheckBox(this);charging.setText("Only while charging");charging.setTextColor(teal);charging.setChecked(getPreferences(0).getBoolean("charging",true));col.addView(charging);
- Button start=button("ACTIVATE NODE");col.addView(start);start.setOnClickListener(v->{try{int m=Integer.parseInt(mem.getText().toString()),t=Integer.parseInt(threads.getText().toString());if(m<128||t<1||t>Runtime.getRuntime().availableProcessors())throw new IllegalArgumentException();getPreferences(0).edit().putString("mem",""+m).putString("threads",""+t).putBoolean("charging",charging.isChecked()).apply();startForegroundService(new Intent(this,NodeService.class).putExtra("mem",m).putExtra("threads",t).putExtra("charging",charging.isChecked()));}catch(Exception e){Toast.makeText(this,"Invalid budget or threads: "+e.getMessage(),Toast.LENGTH_LONG).show();}});
- Button stop=button("STOP NODE");col.addView(stop);stop.setOnClickListener(v->stopService(new Intent(this,NodeService.class)));
- col.addView(label("SECURE LAN // TLS 50552 • no ADB",13));
- pairing=label("OFFLINE",12);pairing.setTextIsSelectable(true);col.addView(pairing);
- Button copy=button("COPY PAIRING DETAILS");col.addView(copy);copy.setOnClickListener(v->{String x=pairing.getText().toString();if(x.contains(" | ")){getSystemService(android.content.ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("SharedCompute private pairing",x));Toast.makeText(this,"Copy a single IP line to your own PC only",Toast.LENGTH_LONG).show();}});
- col.addView(label("NODE LOG",14));log=label("",11);log.setTextIsSelectable(true);col.addView(log);
- if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},1);
+ TextView label(String s,int size){
+  TextView v=new TextView(this);v.setText(s);v.setTextColor(teal);v.setTextSize(size);
+  v.setPadding(0,dp(8),0,dp(8));return v;
+ }
+ Button button(String title){
+  Button b=new Button(this);b.setText(title);b.setTextColor(teal);
+  GradientDrawable d=new GradientDrawable();d.setColor(panel);d.setCornerRadius(dp(8));d.setStroke(dp(1),teal);b.setBackground(d);return b;
+ }
+ EditText field(String text){
+  EditText e=new EditText(this);e.setTextColor(teal);e.setInputType(2);e.setText(text);return e;
+ }
+ MeshPeer mesh(){NodeService n=NodeService.instance;return n==null?null:n.mesh;}
+ JSONObject chosen(){MeshPeer n=mesh();return n==null||selectedId==null?null:n.peers.get(selectedId);}
+ @Override public void onCreate(Bundle state){
+  super.onCreate(state);
+  ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setBackgroundColor(bg);
+  LinearLayout col=new LinearLayout(this);col.setOrientation(1);col.setPadding(dp(16),dp(16),dp(16),dp(16));scroll.addView(col);setContentView(scroll);
+  scroll.setOnApplyWindowInsetsListener((v,insets)->{
+   android.graphics.Insets i=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());
+   v.setPadding(i.left,i.top,i.right,i.bottom);return insets;
+  });scroll.requestApplyInsets();
+  col.addView(label("SHARED  //  COMPUTE  MESH",25));
+  status=label("OFFLINE",18);col.addView(status);
+  ram=label("",13);col.addView(ram);
+  col.addView(label("ROLE  /  MASTER  ·  WORKER  ·  AUTO",13));
+  role=new Spinner(this);
+  String[] choices={"AUTO","MASTER","WORKER"};
+  ArrayAdapter<String> roleItems=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,choices);
+  role.setAdapter(roleItems);
+  int ix=Arrays.asList(choices).indexOf(getPreferences(0).getString("role","AUTO"));
+  role.setSelection(Math.max(0,ix));col.addView(role);
+  col.addView(label("RPC MEMORY LIMIT MiB (worker only)",12));
+  mem=field(getPreferences(0).getString("mem","1024"));col.addView(mem);
+  col.addView(label("RPC CPU THREADS (worker only)",12));
+  threads=field(getPreferences(0).getString("threads","4"));col.addView(threads);
+  charging=new CheckBox(this);charging.setText("Only compute while charging");charging.setTextColor(teal);
+  charging.setChecked(getPreferences(0).getBoolean("charging",true));col.addView(charging);
+  Button start=button("START MESH / DISCOVER");col.addView(start);
+  start.setOnClickListener(v->{
+   try{
+    int memory=Integer.parseInt(mem.getText().toString()),cpu=Integer.parseInt(threads.getText().toString());
+    if(memory<128||cpu<1||cpu>Runtime.getRuntime().availableProcessors())throw new IllegalArgumentException("Invalid limits");
+    String mode=role.getSelectedItem().toString();
+    getPreferences(0).edit().putString("mem",""+memory).putString("threads",""+cpu)
+      .putString("role",mode).putBoolean("charging",charging.isChecked()).apply();
+    Intent intent=new Intent(this,NodeService.class);
+    intent.putExtra("mem",memory).putExtra("threads",cpu).putExtra("charging",charging.isChecked()).putExtra("mesh_role",mode);
+    startForegroundService(intent);
+   }catch(Exception ex){Toast.makeText(this,"Cannot start: "+ex.getMessage(),Toast.LENGTH_LONG).show();}
+  });
+  Button stop=button("STOP MESH");col.addView(stop);
+  stop.setOnClickListener(v->stopService(new Intent(this,NodeService.class)));
+  meshState=label("MESH OFFLINE",13);col.addView(meshState);
+  col.addView(label("DEVICES ON YOUR WI-FI",15));
+  devices=new ListView(this);adapter=new ArrayAdapter<>(this,android.R.layout.simple_list_item_activated_1,new ArrayList<>());
+  devices.setAdapter(adapter);devices.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
+  col.addView(devices,new LinearLayout.LayoutParams(-1,dp(170)));
+  devices.setOnItemClickListener((parent,view,index,id)->{if(index<visibleIds.size())selectedId=visibleIds.get(index);});
+  Button pair=button("PAIR SELECTED  /  AUTO-JOIN ACTIVE");col.addView(pair);
+  pair.setOnClickListener(v->{MeshPeer n=mesh();JSONObject p=chosen();if(n==null||p==null){Toast.makeText(this,"Select a device",Toast.LENGTH_SHORT).show();return;}n.pair(p);});
+  Button send=button("SEND FILE TO MASTER");col.addView(send);
+  send.setOnClickListener(v->{
+   JSONObject p=chosen();
+   if(p==null||!Arrays.asList("MASTER","AUTO").contains(p.optString("role",""))){
+    Toast.makeText(this,"Select a master device",Toast.LENGTH_SHORT).show();return;
+   }
+   Intent picker=new Intent(Intent.ACTION_OPEN_DOCUMENT);picker.setType("*/*");
+   picker.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(picker,41);
+  });
+  Button rpc=button("COPY LEGACY RPC PAIRING (OPTIONAL)");col.addView(rpc);
+  rpc.setOnClickListener(v->{
+   NodeService srv=NodeService.instance;String line=srv==null?"":srv.getPairing();
+   if(!line.contains(" | ")){Toast.makeText(this,"RPC offline",Toast.LENGTH_SHORT).show();return;}
+   getSystemService(android.content.ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Private RPC pairing",line));
+   Toast.makeText(this,"RPC details copied; keep the token private",Toast.LENGTH_LONG).show();
+  });
+  col.addView(label("ACTIVITY / ERRORS",14));log=label("",11);log.setTextIsSelectable(true);col.addView(log);
+  if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){
+   requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},1);
+  }
+ }
+ @Override protected void onActivityResult(int request,int result,Intent data){
+  super.onActivityResult(request,result,data);
+  if(request==41&&result==RESULT_OK&&data!=null){
+   MeshPeer n=mesh();JSONObject peer=chosen();Uri uri=data.getData();
+   if(n!=null&&peer!=null&&uri!=null)n.send(peer,uri);
+  }
  }
  @Override protected void onStart(){super.onStart();h.post(refresh);}
  @Override protected void onStop(){h.removeCallbacks(refresh);super.onStop();}

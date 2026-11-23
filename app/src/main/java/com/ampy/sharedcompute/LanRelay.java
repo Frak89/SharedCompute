@@ -85,19 +85,30 @@ final class LanRelay implements AutoCloseable {
   }catch(Exception e){if(!closed)NodeService.add("LAN discovery unavailable: "+e.getClass().getSimpleName());}
  }
  private void serve(SSLSocket c){
-  Socket rpc=null;
+  Socket rpc=null;String phase="TLS handshake";
   try{
    c.setSoTimeout(10000);c.startHandshake();
+   phase="pairing authentication";
    InputStream in=c.getInputStream();OutputStream out=c.getOutputStream();
    byte[] supplied=new byte[64];
    int off=0;while(off<supplied.length){int n=in.read(supplied,off,supplied.length-off);if(n<0)return;off+=n;}
-   if(!MessageDigest.isEqual(supplied,token.getBytes(StandardCharsets.US_ASCII)))return;
+   if(!MessageDigest.isEqual(supplied,token.getBytes(StandardCharsets.US_ASCII))){
+    NodeService.add("LAN: pairing token rejected; reactivate node and copy new pairing details.");
+    return;
+   }
+   phase="Android RPC worker 127.0.0.1:50052";
    rpc=new Socket();sockets.add(rpc);rpc.connect(new InetSocketAddress("127.0.0.1",50052),3000);
    out.write(1);out.flush();c.setSoTimeout(0);
+   NodeService.add("LAN: TLS authenticated and RPC worker connected ("+c.getInetAddress().getHostAddress()+").");
+   phase="RPC data tunnel";
    final Socket target=rpc;
    Thread back=new Thread(()->{try{copy(target.getInputStream(),out);}catch(IOException ignored){}finally{quiet(c);quiet(target);}},"lan-rpc-back");back.setDaemon(true);back.start();
    try{copy(in,rpc.getOutputStream());}finally{quiet(c);quiet(rpc);}
-  }catch(Exception ignored){}finally{sockets.remove(c);quiet(c);if(rpc!=null){sockets.remove(rpc);quiet(rpc);}}
+  }catch(Exception e){
+   String detail=e.getMessage()==null?"":e.getMessage();
+   if(detail.length()>180)detail=detail.substring(0,180);
+   NodeService.add("LAN ERROR ["+phase+"]: "+e.getClass().getSimpleName()+" "+detail);
+  }finally{sockets.remove(c);quiet(c);if(rpc!=null){sockets.remove(rpc);quiet(rpc);}}
  }
  private static void copy(InputStream in,OutputStream out)throws IOException{byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1){out.write(b,0,n);out.flush();}}
  private static void quiet(Socket s){try{s.close();}catch(IOException ignored){}}

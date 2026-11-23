@@ -2,6 +2,7 @@
 import hmac
 import hashlib
 import ipaddress
+import json
 import os
 import queue
 import re
@@ -29,10 +30,38 @@ def parse_pairings(text):
     if len({r[0] for r in rows})!=len(rows): raise ValueError("Use only one line per Android device.")
     return rows
 
+def load_approved_mesh_nodes(base):
+    """Import only credentials delivered over authenticated Mesh TLS."""
+    locations = [
+        base / "mesh-data" / "rpc_nodes.json",
+        base.parent / "mesh-data" / "rpc_nodes.json",
+        Path(r"D:\CYBER_AI\SHAREDCOMPUTE\mesh-data\rpc_nodes.json"),
+        Path(r"E:\CYBER_AI\SHAREDCOMPUTE\mesh-data\rpc_nodes.json"),
+    ]
+    lines = []
+    for file in locations:
+        if not file.is_file():
+            continue
+        try:
+            records = json.loads(file.read_text(encoding="utf-8"))
+            for node in records.values():
+                line = " | ".join((node["ip"], node["pin"], node["token"]))
+                parse_pairings(line)  # Strictly validate before using.
+                if line not in lines:
+                    lines.append(line)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return "\n".join(lines)
+
+
 def connect_node(row, port=50552):
     ip,pin,token=row
-    raw=socket.create_connection((ip,port),timeout=8)
+    try:
+        raw=socket.create_connection((ip,port),timeout=8)
+    except OSError as exc:
+        raise ConnectionError("Android node "+ip+" port "+str(port)+" unreachable: "+str(exc)) from exc
     tls=None
+    phase="TLS handshake"
     try:
         ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.minimum_version=ssl.TLSVersion.TLSv1_2
@@ -41,10 +70,19 @@ def connect_node(row, port=50552):
         tls=ctx.wrap_socket(raw,server_hostname=ip)
         actual=hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
         if not hmac.compare_digest(actual,pin): raise ssl.SSLError("Android certificate does not match pasted fingerprint.")
+        phase="pairing authentication"
         tls.sendall(token.encode("ascii"))
-        if tls.recv(1)!=b"\x01": raise ConnectionError("Node rejected pairing or local RPC not ready.")
+        try:
+            reply=tls.recv(1)
+        except (ssl.SSLError, OSError) as exc:
+            raise ConnectionError("Android closed the tunnel after pairing. Check Android NODE LOG for RPC worker errors: "+str(exc)) from exc
+        if reply!=b"\x01":
+            raise ConnectionError("Android did not acknowledge pairing or local RPC is not ready. Check Android NODE LOG; reactivate and recopy pairing details.")
         tls.settimeout(None)
         return tls
+    except ssl.SSLError as exc:
+        (tls or raw).close()
+        raise ConnectionError("Android "+phase+" failed: "+str(exc)) from exc
     except BaseException:
         (tls or raw).close()
         raise
@@ -126,15 +164,20 @@ def main():
     style.configure("TButton",background=panel,foreground=fg,padding=6)
     top=ttk.Frame(root,padding=12);top.pack(fill="both",expand=True)
     base=Path(sys.executable if getattr(sys,"frozen",False) else __file__).resolve().parent
-    default=next((p for p in (base/"llama-server.exe",base.parent/"llama-server.exe",Path(r"E:\CYBER_AI\LLAMA_CPP\llama-server.exe")) if p.is_file()),base/"llama-server.exe")
-    server=tk.StringVar(value=str(default));model=tk.StringVar()
+    default=next((p for p in (base/"llama-server.exe",base.parent/"llama-server.exe",Path(r"D:\CYBER_AI\LLAMA_CPP\llama-server.exe"),Path(r"E:\CYBER_AI\LLAMA_CPP\llama-server.exe")) if p.is_file()),base/"llama-server.exe")
+    server=tk.StringVar(value=str(default))
+    default_model=next((str(p) for p in (
+        Path(r"D:\CYBER_AI\MODEL\Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q5_K_S.gguf"),
+        Path(r"E:\CYBER_AI\MODEL\Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q5_K_S.gguf")
+    ) if p.is_file()),"")
+    model=tk.StringVar(value=default_model)
     def field(title,var,patterns=None):
         ttk.Label(top,text=title).pack(anchor="w")
         row=ttk.Frame(top);row.pack(fill="x")
         ttk.Entry(row,textvariable=var).pack(side="left",fill="x",expand=True)
         if patterns:
             def browse():
-                p=filedialog.askopenfilename(initialdir=r"E:\CYBER_AI",filetypes=patterns)
+                p=filedialog.askopenfilename(initialdir=r"D:\CYBER_AI" if Path(r"D:\CYBER_AI").exists() else r"E:\CYBER_AI",filetypes=patterns)
                 if p:var.set(p)
             ttk.Button(row,text="Browse",command=browse).pack(side="left")
     ttk.Label(top,text="SHAREDCOMPUTE // AUTHENTICATED WI-FI RPC").pack(anchor="w")
@@ -142,6 +185,13 @@ def main():
     field("Original GGUF — no copy",model,[("GGUF","*.gguf")])
     ttk.Label(top,text="Android: activate node and paste ONE private pairing line per device below. Keep tokens secret.").pack(anchor="w")
     pairs=tk.Text(top,height=5,bg=panel,fg=fg,insertbackground=fg,wrap="word");pairs.pack(fill="x")
+    def import_mesh():
+        known=load_approved_mesh_nodes(base)
+        if known:
+            pairs.delete("1.0","end");pairs.insert("1.0",known)
+        else:
+            messagebox.showinfo("Mesh","No approved Mesh RPC workers yet. Start Mesh on both devices, approve pairing, and activate Android worker.")
+    ttk.Button(top,text="IMPORT APPROVED MESH NODES",command=import_mesh).pack(anchor="w")
     row=ttk.Frame(top);row.pack(fill="x")
     layers=tk.StringVar(value="4");context=tk.StringVar(value="1024");port=tk.StringVar(value="8081")
     for title,var in (("RPC layers",layers),("Context",context),("API port",port)):
@@ -152,7 +202,11 @@ def main():
     def start():
         if state["busy"]:return
         try:
-            rows=parse_pairings(pairs.get("1.0","end"))
+            candidate=pairs.get("1.0","end").strip()
+            if not candidate:
+                candidate=load_approved_mesh_nodes(base)
+                if candidate:pairs.insert("1.0",candidate)
+            rows=parse_pairings(candidate)
             exe=Path(server.get()).resolve();gguf=Path(model.get()).resolve()
             if not exe.is_file() or exe.name.lower()!="llama-server.exe":raise ValueError("Select llama-server.exe")
             if not gguf.is_file() or gguf.suffix.lower()!=".gguf":raise ValueError("Select original GGUF")
@@ -163,6 +217,13 @@ def main():
         def run():
             relays=[];proc=None
             try:
+                # Authenticate and verify the Android RPC worker BEFORE loading any GGUF.
+                for r in rows:
+                    if cancel.is_set():return
+                    emit("PREFLIGHT: testing TLS, certificate pin, pairing and RPC on "+r[0])
+                    with connect_node(r):
+                        pass
+                    emit("PREFLIGHT OK: "+r[0]+" authenticated; Android RPC ready")
                 for r in rows:
                     if cancel.is_set():return
                     relay=Relay(r,emit);relays.append(relay)

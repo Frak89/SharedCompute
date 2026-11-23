@@ -176,9 +176,20 @@ class Mesh:
                         except OSError:pass
         except OSError as ex:self.emit("log","Discovery error: "+str(ex))
     def connect(self,p,request):
-        ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE
+        ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.minimum_version=ssl.TLSVersion.TLSv1_2
+        ctx.maximum_version=ssl.TLSVersion.TLSv1_2
+        ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE
         with socket.create_connection((p["ip"],int(p["port"])),timeout=8) as raw:
-            with ctx.wrap_socket(raw,server_hostname=p["ip"]) as sock:
+            try:
+                sock=ctx.wrap_socket(raw,server_hostname=p["ip"])
+            except ssl.SSLError as ex:
+                raise ConnectionError(
+                    "TLS handshake with "+p.get("name","Android")+" failed ("+str(ex)+"). "+
+                    "Check the Android ACTIVITY / ERRORS log for 'Incoming TLS handshake failed' "+
+                    "and install matching Mesh APK 1.3.1."
+                ) from ex
+            with sock:
                 sock.settimeout(75);actual=hashlib.sha256(sock.getpeercert(binary_form=True)).hexdigest()
                 known=self.cfg["paired"].get(p["device_id"],{})
                 if not secrets.compare_digest(actual,p["pin"]) or (known.get("pin") and not secrets.compare_digest(actual,known["pin"])):

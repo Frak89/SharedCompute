@@ -27,6 +27,7 @@ final class MeshPeer implements AutoCloseable {
  final Service service;final String mode,deviceId,name;final SharedPreferences prefs;
  final ConcurrentHashMap<String,JSONObject> peers=new ConcurrentHashMap<>();
  final ConcurrentHashMap<String,Pending> pending=new ConcurrentHashMap<>();
+ final ConcurrentHashMap<String,Long> autoAttempts=new ConcurrentHashMap<>();
  final ExecutorService pool=Executors.newFixedThreadPool(8);
  volatile boolean closed;volatile SSLServerSocket tls;volatile MulticastSocket udp;volatile String fingerprint="";
  WifiManager.MulticastLock wifiLock;
@@ -126,6 +127,13 @@ final class MeshPeer implements AutoCloseable {
      if(!other.optString("pin").matches("[0-9a-fA-F]{64}"))continue;
      if(!Arrays.asList("offer","discover").contains(other.optString("type")))continue;
      other.put("ip",p.getAddress().getHostAddress());other.put("seen",SystemClock.elapsedRealtime());peers.put(other.getString("device_id"),other);
+     String remoteRole=other.optString("role"),remoteId=other.optString("device_id");
+     boolean autoJoin=(mode.equals("WORKER")&&(remoteRole.equals("MASTER")||remoteRole.equals("AUTO")))||
+      (mode.equals("AUTO")&&(remoteRole.equals("MASTER")||(remoteRole.equals("AUTO")&&deviceId.compareTo(remoteId)>0)));
+     if(autoJoin){
+      long now=SystemClock.elapsedRealtime();Long last=autoAttempts.get(remoteId);
+      if(last==null||now-last>120000){autoAttempts.put(remoteId,now);log("Auto pairing: "+other.optString("name"));pair(other);}
+     }
      if(other.getString("type").equals("discover")&&!fingerprint.isEmpty()){
       byte[] reply=offer().toString().getBytes(StandardCharsets.UTF_8);ms.send(new DatagramPacket(reply,reply.length,p.getAddress(),p.getPort()));
      }

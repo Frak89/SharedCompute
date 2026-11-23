@@ -79,3 +79,24 @@ jobs:
         with:
           name: SharedCompute-Windows
           path: bundle/
+
+  lan-host:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify LAN host source
+        shell: pwsh
+        run: python -m py_compile host/lanhost.py
+      - name: Package corrected LAN Host
+        shell: pwsh
+        run: |
+          python -m pip install pyinstaller
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name SharedCompute-LAN-Host host/lanhost.py
+          if (!(Test-Path dist/SharedCompute-LAN-Host.exe)) { throw 'Missing LAN Host executable' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SharedCompute-LAN-Host
+          path: dist/SharedCompute-LAN-Host.exe
